@@ -129,7 +129,7 @@ val evaluator = new MulticlassClassificationEvaluator()
   .setMetricName("accuracy")
 /*
 -- Here we are trying hyper parameters
--- First is maxDepth, it's an array with two values, 5, 10 
+-- First is maxDepth, it's an array with two values, 3, 5 
 -- maxDepth puts a limit on how deep we can construct the tree
 -- Remember, we said that with decision trees main problem was overfitting the data
 -- random forest does a better job but still, there is an issue if we allow the tree to be too deep
