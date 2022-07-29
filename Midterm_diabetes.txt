@@ -1,0 +1,192 @@
+*********************************************************
+*********************************************************
+   Diabetes Prediction using Random Forest
+*********************************************************
+*********************************************************
+
+—- List to make sure my dataset is properly uploaded from my local drive to the server
+
+ls
+
+—- Make a directory ‘BigData’
+
+mkdir /BigData
+
+—- List to make sure ‘BigData’ directory is created
+
+ls
+
+-- copyFromLocal to HDFS
+
+hadoop fs -copyFromLocal diabetes.csv /BigData
+
+-- Run spark-shell
+
+spark-shell --master yarn
+
+/*
+Import required libraries in Scala
+*/
+
+import org.apache.spark.sql.functions._
+import org.apache.spark.sql.expressions.Window
+import org.apache.spark.ml.feature.{VectorAssembler, StringIndexer}
+import org.apache.spark.ml.Pipeline
+import org.apache.spark.ml.classification.{RandomForestClassificationModel, RandomForestClassifier}
+import org.apache.spark.ml.tuning.{CrossValidator, CrossValidatorModel, ParamGridBuilder}
+import org.apache.spark.ml.evaluation.{MulticlassClassificationEvaluator}
+import org.apache.spark.ml.param.ParamMap
+import org.apache.spark.sql.types._
+import org.apache.spark.ml.linalg.Vectors
+import spark.implicits._
+
+/*
+Create Schema
+*/
+
+val schema = StructType(Array(
+	StructField("Pregnancies", IntegerType, true),
+	StructField("Glucose", IntegerType, true),
+	StructField("BloodPressure", IntegerType, true),
+	StructField("SkinThickness", IntegerType, true), 
+        StructField("Insulin", IntegerType, true),
+	StructField("BMI", DoubleType, true),
+	StructField("DiabetesPedigreeFunction", DoubleType, true),
+	StructField("Age", IntegerType, true),
+	StructField("Outcome", IntegerType, true)))
+	
+
+/*
+Read in dataset
+*/
+
+val diabetes = spark.read
+ .format("csv")
+ .option("header", "true")
+ .schema(schema)
+ .load("hdfs://10.128.0.2:8020/BigData/diabetes.csv")
+
+/*
+Index Age Column
+*/
+
+val indexer = new StringIndexer()
+  .setInputCol("Age")
+  .setOutputCol("Age_indexed")
+
+/*
+-- Split our dataset into training and test data typical 80 20
+-- we give a seed so we have the same random data in each set
+*/
+
+val Array(trainingData, testData) = diabetes.randomSplit(Array(0.8, 0.2), 754) 
+
+
+
+/*
+—- Assemble all features
+-- Next we assemble our features using vector assembler, this time we have more than one feature
+*/
+
+val assembler = new VectorAssembler()
+ .setInputCols(Array("Pregnancies","Glucose","BloodPressure","SkinThickness","Insulin","BMI","DiabetesPedigreeFunction","Age"))
+ .setOutputCol("feature")
+
+
+/*Random Forest  
+-- We now create a new random forest object 
+-- give features (as a vector)
+-- give the label as Outcome
+*/
+
+val rf = new RandomForestClassifier()
+ .setFeaturesCol("feature")
+ .setLabelCol("Outcome")
+ .setSeed(1234)
+  
+/*Set up pipeline
+-- Use pipepline to set our stages
+-- So our stages are the string indexer, the vector assembler and the random forest classifier object
+*/
+
+
+val pipeline = new Pipeline()
+  .setStages(Array(indexer, assembler, rf))
+
+/*To evaluate the model
+-- Next we provide the evaluator
+-- For regressoin we used RegressionEvaluator
+-- the metric accuracy was simply a percentage
+-- Here we are using MulticlassClassificationEvaluator
+-- we compared Outcome to the prediction column
+-- IF the match, prediction is good else it is unsuccession
+-- metric "accuracy" is basically percentage of accurate results
+*/
+
+val evaluator = new MulticlassClassificationEvaluator()
+  .setLabelCol("Outcome")
+  .setPredictionCol("prediction")
+  .setMetricName("accuracy")
+/*
+-- Here we are trying hyper parameters
+-- First is maxDepth, it's an array with two values, 5, 10 
+-- maxDepth puts a limit on how deep we can construct the tree
+-- Remember, we said that with decision trees main problem was overfitting the data
+-- random forest does a better job but still, there is an issue if we allow the tree to be too deep
+-- so good idea to set the max depth
+-- Second is impurity which we give as entropy (there are other statistical methods to select features).
+-- Explanation of hyper grid above 
+-- maxDepth -> try it with 3 features first and try again with 5
+*/
+
+val paramGrid = new ParamGridBuilder()  
+  .addGrid(rf.maxDepth, Array(3, 5))
+  .addGrid(rf.impurity, Array("entropy","gini")).build()
+
+
+
+
+/*Cross validate model
+-- Next we tie everything together with cross-validator
+-- We set the pipeline for estimator
+-- Multiclassevaluator for evaluator
+-- Set the hyper parameters and the number of folds
+-- Cross validator will divide the training data set into 3
+-- Next each fold is coupled with the paramters for each type
+-- Fold 1 is tried with max depth 3 and entropy and then fold 1 is again tried but this time with max depth 5 and entropy
+-- Next fold 2 is tried with max depth 3 and entropy, and again with max depth 5 and entropy
+-- And so on ...
+-- In total, we will have 3 (folds) x 2 (depth) x 2 (algorithms) = 12 models
+-- the best model is picked
+-- Cross validator basically a way to ensure that:
+-- you are not only taking very good part of the data
+-- or you are only taking very bad part of the data
+*/
+
+val cross_validator = new CrossValidator()
+  .setEstimator(pipeline)
+  .setEvaluator(evaluator)
+  .setEstimatorParamMaps(paramGrid)
+  .setNumFolds(3)
+
+/*
+-- Train the model on training data
+-- Gives us the best model from the 6 variations
+*/
+
+val cvModel = cross_validator.fit(trainingData)
+
+/* Predict with test data
+-- Transform testData with predictions
+*/
+
+val predictions = cvModel.transform(testData)
+
+/* Evaluate the model
+-- check with actual values and print accuracy
+*/
+
+val accuracy = evaluator.evaluate(predictions)
+println("accuracy on test data = " + accuracy)
+
+/* Print: accuracy on test data = 0.7285714285714285 */
